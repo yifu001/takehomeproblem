@@ -166,6 +166,19 @@ def run_questions(cases: list[dict], verbose: bool) -> tuple[int, int, list[str]
         elif kind == "decline":
             ok = res.declined
             detail = "did not decline — " + ("asked instead" if res.clarified else "answered anyway")
+        elif kind == "answer":
+            # The agent answered: no error, no decline, no clarifying question. Pins
+            # outcomes that carry no number to match — a substitution display or a
+            # neutral empty result — where the only failure is answering with a
+            # refusal or bouncing the question back.
+            if res.declined:
+                ok, detail = False, "declined instead of answering"
+            elif res.clarified:
+                ok, detail = False, "asked instead of answering"
+            elif not res.answer.strip():
+                ok, detail = False, "empty answer"
+            else:
+                ok, detail = True, "answered"
         else:
             ok, detail = False, f"unknown expect.kind {kind!r}"
 

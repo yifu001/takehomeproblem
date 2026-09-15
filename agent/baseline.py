@@ -9,16 +9,18 @@ the server resolves the acting user on every turn via `db.get_user`; role claims
 arguments are stripped before anything is recorded; tool output is treated as untrusted
 data; policy refusals force a structured decline through the decline tool; and
 `AgentResult.sql_log` records only the post-policy SQL that actually executed (refused
-queries log nothing).
+queries log nothing). Every turn appends exactly one audit record to audit/turns.jsonl
+via agent/audit.py, carried as `AgentResult.audit`.
 """
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 import openai
 
-from . import db, policy, tools
+from . import audit, db, policy, tools
 
 log = logging.getLogger("agent.baseline")
 
@@ -131,6 +133,9 @@ class AgentResult:
     input_tokens: int = 0
     output_tokens: int = 0
     error: str | None = None
+    # The turn's audit record (agent/audit.py), written to audit/turns.jsonl on every
+    # return path of `run` — eval and interface surfaces alike.
+    audit: dict | None = None
 
     def called(self, name: str) -> bool:
         return any(c["name"] == name for c in self.tool_calls)
@@ -194,9 +199,26 @@ def _narrates_access_denial(text: str) -> bool:
 
 
 def run(question: str, user_id: str, conversation_id: str | None = None) -> AgentResult:
+    """Run one agent turn. Every return path writes exactly one audit record
+    (agent/audit.py → audit/turns.jsonl), carried as `AgentResult.audit`."""
     user = db.get_user(user_id)
     result = AgentResult()
+    recorder = audit.TurnRecorder(question=question, user=user, conversation_id=conversation_id)
+    try:
+        _run_turn(question, user_id, user, conversation_id, result, recorder)
+    finally:
+        result.audit = recorder.finish(result)
+    return result
 
+
+def _run_turn(
+    question: str,
+    user_id: str,
+    user: dict,
+    conversation_id: str | None,
+    result: AgentResult,
+    recorder: audit.TurnRecorder,
+) -> None:
     if conversation_id and conversation_id in _HISTORY:
         bound = _HISTORY[conversation_id]
         if bound["user_id"] != user_id:
@@ -212,7 +234,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
                 "start a new conversation to switch identities"
             )
             result.transcript.append(f"[assistant] {result.answer}")
-            return result
+            return
         messages = list(bound["messages"])
     else:
         messages = [{
@@ -241,7 +263,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
             )
         except openai.APIError as exc:
             result.error = f"{type(exc).__name__}: {exc}"
-            return result
+            return
 
         if response.usage:
             result.input_tokens += response.usage.prompt_tokens
@@ -251,7 +273,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
 
         if getattr(message, "refusal", None):
             result.error = "model refused"
-            return result
+            return
 
         if message.content and message.content.strip():
             result.transcript.append(f"[assistant] {message.content}")
@@ -290,6 +312,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
                 result.transcript.append(f"[tool_result decline] {reason}")
                 result.answer = reason
                 result.declined = True
+                recorder.record_forced_decline(reason)
             break
 
         terminal = False
@@ -314,6 +337,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
             refusal_category: str | None = None
             if name == "run_sql":
                 output, report = tools.run_sql_tool(args.get("sql", ""), user)
+                recorder.record_run_sql(report)
                 if report.refusal is not None:
                     refusal_category = report.refusal.category
                 elif report.sql_executed:
@@ -321,7 +345,15 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
                     # nothing, so forbidden tokens can never enter the eval's scan.
                     result.sql_log.append(report.sql_executed)
             else:
+                tool_started = time.monotonic()
                 output, tool_refusal = tools.dispatch_with_report(name, args, user=user)
+                recorder.record_tool(
+                    name,
+                    args,
+                    refusal_category=tool_refusal,
+                    refusal_detail=output if tool_refusal else None,
+                    latency_ms=int((time.monotonic() - tool_started) * 1000),
+                )
                 if tool_refusal is not None:
                     # A describe_table denial is final like a run_sql denial: the
                     # forced decline below ends the turn here instead of leaving the
@@ -348,6 +380,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
                     result.transcript.append(f"[tool_result decline] {reason}")
                     result.answer = reason
                     result.declined = True
+                    recorder.record_forced_decline(reason)
                     terminal = True
                 else:
                     # PARSE is an ordinary query error (guessed columns, bad syntax), not
@@ -366,8 +399,6 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
 
     if conversation_id:
         _HISTORY[conversation_id] = {"user_id": user_id, "messages": messages}
-
-    return result
 
 
 def reset_state() -> None:

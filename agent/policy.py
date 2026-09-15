@@ -142,7 +142,13 @@ def _refuse(category: str, detail: str) -> _PolicyRefusal:
 
 
 class ExecutionReport:
-    """Structured outcome of one run_query call; consumed by the audit layer."""
+    """Structured outcome of one run_query call; consumed by the audit layer.
+
+    sql_executed is the rewritten statement executed against the database; for
+    floor-stage refusals it records the rewritten statement the floors stopped (that
+    statement itself was never executed); for earlier refusals it stays None. params
+    holds the server-side scope bindings sql_executed must be replayed with.
+    """
 
     def __init__(self, sql_requested: str) -> None:
         self.sql_requested = sql_requested
@@ -151,6 +157,7 @@ class ExecutionReport:
         self.refusal: Refusal | None = None
         self.rows: list[dict] = []
         self.truncated: bool = False
+        self.params: dict[str, str] = {}
         # Floor suppressions and similar result annotations — surfaced with the result,
         # never silent: an output implying all groups are present is a contract failure.
         self.notes: list[str] = []
@@ -584,6 +591,11 @@ def run_query(sql: str, user: dict) -> ExecutionReport:
         _check_anchor(physical_tables, role)
         params = _wrap_row_scopes(physical_tables, role, user, report)
         executed = _regenerate(tree)
+        # Captured before the floors run: a floor refusal records the rewritten
+        # statement the floors stopped (it was never executed; the model's original
+        # string is still nowhere in the report).
+        report.sql_executed = executed
+        report.params = dict(params)
 
         from . import floors  # floors imports this module's constants; deferred to avoid a cycle
 

@@ -172,6 +172,32 @@ of asking roughly one full run in four or five, pre-existing (the prompt already
 enumerates the shape; the flake rotates across cases and every case passes on targeted
 re-run). A loop backstop cannot fix clarify: the loop cannot synthesize what to ask.
 
+## The audit record & cost accounting (2026-09-15, audit-record)
+
+Every agent turn — eval or interface — appends one JSONL record to `audit/turns.jsonl`
+(gitignored runtime evidence; schema in `agent/audit.py`'s docstring and
+`audit/README.md`, mirroring architecture §6). Identity and resolved scope, the
+question, every tool call with `sql_requested` vs the **rewritten** `sql_executed`
+(plus the scope params needed to replay it), `rewrites_applied`, refusals with both
+layers (the policy category on the refused call, the stated reason on the decline
+call), rows returned, answer kind, redactions, tokens, and latency. Records are
+metadata only — never row values.
+
+The offline report doubles as the regulator's one-liner and the metrics gate — it
+parses the whole file, asserts the schema (all required fields non-null, turn_ids
+unique) and prints, per identity, what the agent saw and on whose authority, then
+p50/p95 latency (s), tokens per question, and dollars:
+
+```bash
+.venv/bin/python -m agent.audit audit/turns.jsonl
+```
+
+**Pricing step** (the dollars above): gpt-5.6-terra at **$1.25 / MTok input and
+$10.00 / MTok output** — `dollars = tokens.input/1e6 × 1.25 + tokens.output/1e6 × 10.00`,
+computable from the `tokens` field of any record. Audit token counts are the same
+counters the eval harness prints (`Nin/Mout`), so the two accountings agree exactly
+(verified on a c2/d1 smoke run: 3,629in/36out and 5,636in/129out in both).
+
 ## Run record
 
 First clean full run of the extended suite (2026-09-15, after the prompt changes above):

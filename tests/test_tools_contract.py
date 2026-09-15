@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import baseline, db, policy, tools
+from agent import audit, baseline, db, policy, tools
 from agent.floors import K_SUPPRESSION_NOTE
 
 
@@ -30,12 +30,16 @@ def _tool_schema(name: str) -> dict:
 
 
 @pytest.fixture()
-def fresh_state():
+def fresh_state(tmp_path, monkeypatch):
     baseline._HISTORY.clear()
     tools._RESULT_SETS.clear()
+    # Scripted loop turns write audit records; keep them out of the real audit file.
+    monkeypatch.setattr(audit, "DEFAULT_PATH", str(tmp_path / "turns.jsonl"))
+    audit.reset_runtime_state()
     yield
     baseline._HISTORY.clear()
     tools._RESULT_SETS.clear()
+    audit.reset_runtime_state()
 
 
 class _FakeCompletions:

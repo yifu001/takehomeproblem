@@ -46,7 +46,11 @@ def test_single_customer_aggregate_refuses_with_floor_k_anonymity():
     report = refuses(
         "SELECT COUNT(*) FROM customers WHERE risk_score > 90", "analyst", policy.FLOOR_K_ANONYMITY
     )
-    assert report.sql_executed is None
+    # The report records the rewritten statement the floors stopped — the scope wrap,
+    # never the model's original string. Nothing was executed (refuses asserts no rows).
+    assert report.sql_executed is not None
+    assert "deleted_at" in report.sql_executed
+    assert "risk_score > 90" not in report.sql_executed
     assert "1 distinct customer" in report.refusal.detail
     assert "0 rows" not in report.refusal.detail
 
@@ -291,7 +295,9 @@ def test_fair_lending_business_grain_t5_grouping_refuses():
         "fair_lending",
         policy.FLOOR_PROTECTED_CLASS,
     )
-    assert report.sql_executed is None
+    # The stopped rewritten statement is recorded (scope-wrapped, never the original).
+    assert report.sql_executed is not None
+    assert "deleted_at" in report.sql_executed
 
 
 def test_fair_lending_business_grain_t5_filter_refuses():

@@ -17,7 +17,11 @@ Pipeline — every stage fails closed with a structured refusal:
   7. row-scope rewrite     every customers reference wrapped with role predicates;
                            business tables wrapped with a forced join to the scoped
                            customers relation; users limited to the acting user's row
-  8. execution             read-only connection, authorizer backstop, statement
+  8. floors                k=2 customer-aggregate floor and the protected-class
+                           reporting rule (agent/floors.py), computed from the
+                           rewritten tree; fair_lending customer statements are served
+                           from the sanctioned server-side aggregate path
+  9. execution             read-only connection, authorizer backstop, statement
                            timeout, row cap
 
 Reason categories are defined once here; other modules import the constants.
@@ -47,6 +51,8 @@ PARSE = "parse"
 TIMEOUT = "timeout"
 FLOOR_K_ANONYMITY = "floor_k_anonymity"          # enforced by the floors stage
 FLOOR_PROTECTED_CLASS = "floor_protected_class"  # enforced by the floors stage
+AGGREGATE_ONLY = "aggregate_only"                # floors stage: access is limited to the
+                                                 # sanctioned aggregate path (fair_lending)
 
 # ---------------------------------------------------------------- permission matrix
 
@@ -135,6 +141,9 @@ class ExecutionReport:
         self.refusal: Refusal | None = None
         self.rows: list[dict] = []
         self.truncated: bool = False
+        # Floor suppressions and similar result annotations — surfaced with the result,
+        # never silent: an output implying all groups are present is a contract failure.
+        self.notes: list[str] = []
         self.latency_ms: int | None = None
 
 
@@ -543,20 +552,35 @@ def run_query(sql: str, user: dict) -> ExecutionReport:
         _check_anchor(physical_tables, role)
         params = _wrap_row_scopes(physical_tables, role, user, report)
         executed = _regenerate(tree)
-        report.sql_executed = executed
-        try:
-            rows, truncated = db.execute_readonly(
-                executed, params=params, timeout_seconds=STATEMENT_TIMEOUT_SECONDS, row_cap=ROW_CAP
-            )
-        except sqlite3.OperationalError as exc:
-            message = str(exc).lower()
-            if "interrupt" in message:
-                raise _refuse(TIMEOUT, "statement exceeded the allowed execution time")
-            if "not authorized" in message:
-                raise _refuse(STATEMENT_KIND, "blocked by the execution authorizer")
-            raise _refuse(PARSE, "query rejected at execution")
-        report.rows = rows
-        report.truncated = truncated
+
+        from . import floors  # floors imports this module's constants; deferred to avoid a cycle
+
+        outcome = floors.enforce(tree, resolved, role, params, sql)
+        report.notes.extend(outcome.notes)
+        if outcome.rows is not None:
+            # Sanctioned path (fair_lending): server-constructed probes produced the
+            # final rows; the model's statement itself is never executed.
+            report.sql_executed = outcome.sql_executed
+            report.rewrites_applied.extend(outcome.rewrites)
+            report.rows = outcome.rows
+        else:
+            if outcome.modified:
+                executed = _regenerate(tree)
+                report.rewrites_applied.extend(outcome.rewrites)
+            report.sql_executed = executed
+            try:
+                rows, truncated = db.execute_readonly(
+                    executed, params=params, timeout_seconds=STATEMENT_TIMEOUT_SECONDS, row_cap=ROW_CAP
+                )
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "interrupt" in message:
+                    raise _refuse(TIMEOUT, "statement exceeded the allowed execution time")
+                if "not authorized" in message:
+                    raise _refuse(STATEMENT_KIND, "blocked by the execution authorizer")
+                raise _refuse(PARSE, "query rejected at execution")
+            report.rows = rows
+            report.truncated = truncated
     except _PolicyRefusal as refusal:
         report.refusal = refusal.refusal
     report.rewrites_applied = list(dict.fromkeys(report.rewrites_applied))

@@ -21,9 +21,11 @@
  *   clarify — an interactive prompt card inviting an answer in the same thread;
  *   decline — a red-bordered access-denied card carrying the audit record's refusal
  *             category (never worded as "no results");
- *   error   — a distinct error card for agent failures, network failures, or a
- *             conversation id left stale by a service restart — never a silent
- *             empty answer.
+ *   error   — a distinct error card for agent failures, network failures (one
+ *             automatic retry is made first: the first POST after a service restart
+ *             can land on the browser's dead pooled keep-alive connection while the
+ *             service is healthy), or a conversation id left stale by a service
+ *             restart — never a silent empty answer.
  * Each assistant message carries a collapsed-by-default transparency panel with the
  * turn's tool calls, the post-rewrite SQL that actually executed, and the audit
  * record's scope details. Raw model transcripts, token counts, and costs are
@@ -219,6 +221,27 @@
 
   // ------------------------------------------------------------- ask a turn
 
+  // One automatic retry on a network-level failure (fetch rejected before any HTTP
+  // answer): Chrome can hold a dead pooled keep-alive connection right after a service
+  // restart while the service itself is healthy. HTTP error statuses are real answers
+  // and are never retried; if the retry also fails, the fetch throws and the normal
+  // error card renders below.
+  async function postChat(payload) {
+    try {
+      return await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (networkError) {
+      return await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    }
+  }
+
   async function ask(question) {
     const user = state.current;
     if (!user || state.pending) return;
@@ -234,14 +257,10 @@
     els.thread.appendChild(placeholder);
     scrollThreadToEnd();
     try {
-      const resp = await fetch("/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: userId,
-          question,
-          conversation_id: state.conversations.get(userId) || null,
-        }),
+      const resp = await postChat({
+        user_id: userId,
+        question,
+        conversation_id: state.conversations.get(userId) || null,
       });
       if (!resp.ok) {
         await handleHttpError(resp, userId);

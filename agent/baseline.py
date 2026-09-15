@@ -99,6 +99,8 @@ convert, approximate, or reply in prose. Timestamps are UTC, stored as ISO text.
 
 The only alerts.status values are 'open', 'OPEN', 'closed', 'CLOSED' and 'resolved'
 (inconsistently cased — match case-insensitively, e.g. UPPER(status) = 'OPEN').
+Every transactions.channel value is lowercase ('ach', 'wire', 'card', 'check') — match
+channel case-insensitively the same way (e.g. UPPER(channel) = 'ACH').
 
 When a question is ambiguous and different readings would materially change the
 answer, end the turn with the ask_clarifying_question tool — a prose reply is not a
@@ -142,6 +144,53 @@ def conversation_owner(conversation_id: str) -> str | None:
     """
     bound = _HISTORY.get(conversation_id)
     return bound["user_id"] if bound else None
+
+
+# A final assistant message that states an access denial in prose — instead of ending
+# the turn through the decline tool — is still an access denial: expect_declined reads
+# the structured flag, not the wording. The markers catch the multi-tool-turn shape
+# where a refusal reaches the model (a refused run_sql or describe_table result, or
+# readable-tables output that excludes the data asked for) and the model restates the
+# denial as its final answer. Matched against the lowercased final message, only when
+# the turn has not already declined or clarified. Deliberately conservative: generic
+# inability ("cannot answer") is not an access reason and is not matched, and PARSE is
+# excluded because an ordinary query error is retryable, not a denial.
+_ACCESS_DENIAL_MARKERS = (
+    "access denied",
+    "access refused",
+    "query refused by access policy",
+    "can't access",
+    "cannot access",
+    "couldn't access",
+    "could not access",
+    "don't have access",
+    "do not have access",
+    "doesn't have access",
+    "does not have access",
+    "no access to",
+    "not able to access",
+    "unable to access",
+    "not authorized",
+    "not permitted",
+    policy.COLUMN_DENIED,
+    policy.ROW_SCOPE,
+    policy.TABLE_DENIED,
+    policy.STATEMENT_KIND,
+    policy.FLOOR_K_ANONYMITY,
+    policy.FLOOR_PROTECTED_CLASS,
+    policy.AGGREGATE_ONLY,
+)
+
+
+def _narrates_access_denial(text: str) -> bool:
+    """Whether a final assistant message states an access denial in prose.
+
+    Contractions are normalized first: the model renders them with typographic
+    apostrophes (can’t), and a marker miss here is exactly the prose-decline leak the
+    backstop exists to catch.
+    """
+    lowered = text.lower().replace("\u2019", "'").replace("\u2018", "'")
+    return any(marker in lowered for marker in _ACCESS_DENIAL_MARKERS)
 
 
 def run(question: str, user_id: str, conversation_id: str | None = None) -> AgentResult:
@@ -221,6 +270,26 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
 
         if not message.tool_calls:
             result.answer = (message.content or "").strip()
+            if (
+                not result.declined
+                and not result.clarified
+                and _narrates_access_denial(result.answer)
+            ):
+                # Backstop for the prose-decline flake (the L20 shape): the model
+                # stated an access denial as its final answer without calling decline.
+                # The refusal contract requires the structured form, so the loop
+                # synthesizes it; the model's own prose stays in the transcript for
+                # the audit record.
+                reason = (
+                    "Access denied: the requested data is outside the access policy "
+                    "for this identity."
+                )
+                decline_args = {"reason": reason}
+                result.tool_calls.append({"name": "decline", "input": decline_args})
+                result.transcript.append(f"[tool_use decline] {json.dumps(decline_args)}")
+                result.transcript.append(f"[tool_result decline] {reason}")
+                result.answer = reason
+                result.declined = True
             break
 
         terminal = False
@@ -252,7 +321,12 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
                     # nothing, so forbidden tokens can never enter the eval's scan.
                     result.sql_log.append(report.sql_executed)
             else:
-                output = tools.dispatch(name, args, user=user)
+                output, tool_refusal = tools.dispatch_with_report(name, args, user=user)
+                if tool_refusal is not None:
+                    # A describe_table denial is final like a run_sql denial: the
+                    # forced decline below ends the turn here instead of leaving the
+                    # model to narrate the refusal as its final answer.
+                    refusal_category = tool_refusal
 
             result.transcript.append(f"[tool_result {name}] {output}")
             messages.append(

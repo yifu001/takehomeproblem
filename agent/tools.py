@@ -260,6 +260,24 @@ def dispatch(name: str, args: dict, *, user: dict) -> str:
     return f"error: unknown tool {name!r}"
 
 
+def dispatch_with_report(name: str, args: dict, *, user: dict) -> tuple[str, str | None]:
+    """dispatch plus the structured refusal category when the tool result is one of
+    the policy's normalized access refusals ("error: query refused by access policy
+    (<category>)"). The agent loop force-declines on those: an access refusal is a
+    final decision no matter which tool surfaced it, and the turn must not end on the
+    model narrating the denial in prose. Non-access errors (unknown tool, chart
+    handle retries) carry no category and stay retryable.
+    """
+    if name == "run_sql":
+        text, report = run_sql_tool(args.get("sql", ""), user)
+        return text, report.refusal.category if report.refusal is not None else None
+    text = dispatch(name, args, user=user)
+    prefix = f"{REFUSED} ("
+    if text.startswith(prefix) and text.endswith(")"):
+        return text, text[len(prefix):-1]
+    return text, None
+
+
 def clear_result_sets() -> None:
     """Drop all policy-issued chart handles (between eval runs)."""
     _RESULT_SETS.clear()

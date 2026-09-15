@@ -431,6 +431,77 @@ def test_system_prompt_covers_required_guidance():
     assert "currency" in prompt.lower()   # mixed-currency discipline
     assert "ask_clarifying_question" in prompt and "decline" in prompt
     assert "customer_id" in prompt        # business-table join guidance
+    assert "channel" in prompt            # dirty-cased channel values are enumerated
+
+
+# ---------------------------------------------------------------- prose-decline backstop
+
+
+def test_prose_access_denial_final_answer_gets_structured_decline(fresh_state, monkeypatch):
+    """L20 shape: the model investigates (list_tables), sees the data is outside its
+    access, and narrates the denial in prose as its final answer instead of calling
+    decline. The loop synthesizes the structured decline so expect_declined holds."""
+    client = _FakeClient([
+        _response(tool_calls=[_tool_call("c1", "list_tables")]),
+        _response(content="I can't access alert records or case notes with the available warehouse tables."),
+    ])
+    _patch(monkeypatch, client)
+    res = baseline.run("Read the case notes attached to the critical alerts.", "u_ops")
+    assert res.declined and res.called("decline")
+    decline_call = next(c for c in res.tool_calls if c["name"] == "decline")
+    assert "access" in decline_call["input"]["reason"].lower()
+    assert "[tool_use decline]" in "\n".join(res.transcript)
+
+
+def test_reason_category_echo_in_prose_gets_structured_decline(fresh_state, monkeypatch):
+    """The model restating a refusal's category text as its final answer is still a
+    prose decline — the loop synthesizes the structured form."""
+    client = _FakeClient([
+        _response(tool_calls=[_tool_call("c1", "describe_table", table="case_notes")]),
+        _response(content="The query was refused: error: query refused by access policy (table_denied)."),
+    ])
+    _patch(monkeypatch, client)
+    res = baseline.run("Summarise the case notes on the structuring alert.", "u_ana")
+    assert res.declined and res.called("decline")
+
+
+def test_backstop_matches_typographic_apostrophes(fresh_state, monkeypatch):
+    """The model renders contractions with typographic apostrophes (can’t) — the
+    marker match normalizes them or the L20 narration slips through."""
+    client = _FakeClient([
+        _response(tool_calls=[_tool_call("c1", "list_tables")]),
+        _response(content="I can’t access alert records or case notes with the available warehouse tables."),
+    ])
+    _patch(monkeypatch, client)
+    res = baseline.run("Read the case notes attached to the critical alerts.", "u_ops")
+    assert res.declined and res.called("decline")
+
+
+def test_describe_table_refusal_forces_structured_decline(fresh_state, monkeypatch):
+    """A describe_table access refusal is final like a run_sql refusal: the loop
+    force-declines instead of letting the model narrate the denial in prose."""
+    client = _FakeClient([
+        _response(tool_calls=[_tool_call("c1", "describe_table", table="case_notes")]),
+        _response(content="this second model turn must never happen"),
+    ])
+    _patch(monkeypatch, client)
+    res = baseline.run("What does the case notes table look like?", "u_ana")
+    assert res.declined and res.called("decline")
+    assert "table_denied" in res.answer
+    assert len(client.chat.completions.calls) == 1  # the loop ended; no second turn
+
+
+def test_prose_answer_without_denial_language_is_not_converted(fresh_state, monkeypatch):
+    """False-positive guard: an ordinary final answer passes through untouched."""
+    client = _FakeClient([
+        _response(tool_calls=[_tool_call("c1", "list_tables")]),
+        _response(content="6 customers in your region."),
+    ])
+    _patch(monkeypatch, client)
+    res = baseline.run("How many customers in my region?", "u_ana")
+    assert not res.declined
+    assert res.answer == "6 customers in your region."
+    assert not res.called("decline")
 
 
 def test_unknown_tool_normalized():

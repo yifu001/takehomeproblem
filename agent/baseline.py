@@ -94,6 +94,7 @@ def run(question: str, user_id: str, conversation_id: str | None = None) -> Agen
                 model=MODEL,
                 max_completion_tokens=MAX_TOKENS,
                 tools=tools.TOOLS,
+                reasoning_effort="none",
                 messages=messages,
             )
         except openai.APIError as exc:

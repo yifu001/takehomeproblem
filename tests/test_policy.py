@@ -157,6 +157,17 @@ def test_select_star_on_business_table_allowed():
     assert len(report.rows) == 19
 
 
+def test_fair_lending_t2_denied_not_substituted():
+    """Purpose-limited roles decline precise asks; their sanctioned path has no zip3/birth_year."""
+    for sql in (
+        "SELECT zip_code FROM customers",
+        "SELECT dob FROM customers",
+        "SELECT full_name FROM customers WHERE zip_code = '94110'",
+        "SELECT full_name FROM customers WHERE dob > '1950'",
+    ):
+        refuses(sql, "fair_lending", policy.COLUMN_DENIED)
+
+
 def test_reviewer_t2_t3_read_precisely_no_substitution():
     """Over-filtering guard: reviewer legitimately holds T2/T3 — precise values, precise names."""
     report = executes("SELECT zip_code, dob FROM customers ORDER BY customer_id", "reviewer")

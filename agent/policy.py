@@ -83,6 +83,11 @@ GENERALIZATIONS: dict[str, str] = {
     "annual_income_usd": "income_band",
 }
 
+# Substitution (instead of denial) applies to row-grain customer-analysis roles. Other
+# roles with partial sets (fair_lending) decline precise asks: their customers access is
+# purpose-limited to the sanctioned aggregate path, which never emits zip3/birth_year.
+GENERALIZATION_ROLES = frozenset({"analyst", "reviewer"})
+
 REGION_SCOPED_ROLES = frozenset({"analyst", "reviewer"})
 ACTIVE_ONLY_ROLES = frozenset({"analyst", "reviewer", "fair_lending"})
 CASE_NOTES_ROLES = frozenset({"reviewer", "compliance"})
@@ -322,7 +327,7 @@ def _substitute(
         if table != "customers" or column not in GENERALIZATIONS:
             continue
         generalized = GENERALIZATIONS[column]
-        if column in allowed or generalized not in allowed:
+        if role not in GENERALIZATION_ROLES or column in allowed or generalized not in allowed:
             continue
         if _clause_position(col) != "projection":
             raise _refuse(

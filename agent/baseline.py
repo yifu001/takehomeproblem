@@ -15,7 +15,7 @@ from . import db, tools
 
 log = logging.getLogger("agent.baseline")
 
-MODEL = "gpt-5.5"
+MODEL = "gpt-5.6-terra"
 MAX_TOKENS = 12000
 MAX_TURNS = 12
 

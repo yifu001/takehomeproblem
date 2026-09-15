@@ -6,6 +6,11 @@ this script was finalized, with DOM snapshots on file for each step. The prompts
 worded to match eval cases that pass deterministically, so what you see on the take
 should agree with what the eval says.
 
+> Provenance: the scripted run below was executed end-to-end against the live
+> interface, with a per-step DOM snapshot on file for each of the 10 steps — see
+> EXECUTION-LOG.md in the mission evidence directory
+> (evidence/docs-deliverables/ under `/Users/yifuzuo/.factory/missions/686d82d3-8c82-4c01-9307-6105a8c23c68/`).
+
 ## Before you hit record
 
 ```bash
@@ -148,7 +153,7 @@ either direction.
 | 3 | "How many customers are there in my region right now?" | Answer is 6 (not 13) | [ ] |
 | 4 | "Break down the alerts in my region by rule and chart it for me." | Bar chart; velocity 3, structuring 2, sanctions 2, card-testing 1 | [ ] |
 | 5 | Open the transparency panel on step 4's message | Requested vs executed SQL (scope wrap visible), rewrites, audit fields | [ ] |
-| 6 | "Show each customer's national_id and email." | Red Access denied card, reason is access (no category chip: model declined pre-execution) | [ ] |
+| 6 | "Show each customer's national_id and email." | Red Access denied card, reason is access. No category chip is correct when the model declined pre-execution; if the policy refused the statement, the chip appears instead. Both variants are correct behavior | [ ] |
 | 7 | "List the wire transactions in my region above $500,000 with their details." | Neutral gray No-matching-rows card | [ ] |
 | 8 | Switch to Rae Lindqvist; "List my region's customers with their zip codes and dates of birth." | Header shows reviewer scope (T0-T3, case_notes allowed); answer carries real zips 94110/94103/94301/94085 and DOBs | [ ] |
 | 9 | Switch to Fern Aguilar; "Company-wide customer count broken down by ethnicity, please." | Access denied card, category floor_protected_class | [ ] |

@@ -279,6 +279,99 @@ def test_fair_lending_empty_scope_count_refuses():
     )
 
 
+# ------------------------------------------ T5 outside the sanctioned path (any grain)
+
+
+def test_fair_lending_business_grain_t5_grouping_refuses():
+    """The 2026-09-15 grain-exemption hole: grouping business rows by a customer T5
+    attribute skipped the floors stage entirely, breaking T5 down without floors."""
+    report = refuses(
+        "SELECT c.sex, COUNT(*) FROM transactions t "
+        "JOIN customers c ON t.customer_id = c.customer_id GROUP BY c.sex",
+        "fair_lending",
+        policy.FLOOR_PROTECTED_CLASS,
+    )
+    assert report.sql_executed is None
+
+
+def test_fair_lending_business_grain_t5_filter_refuses():
+    """A T5 predicate over business rows is the same breakdown in filter position."""
+    refuses(
+        "SELECT t.channel, COUNT(*) FROM transactions t "
+        "JOIN customers c ON t.customer_id = c.customer_id "
+        "WHERE c.sex = 'F' GROUP BY t.channel",
+        "fair_lending",
+        policy.FLOOR_PROTECTED_CLASS,
+    )
+
+
+def test_fair_lending_business_grain_t5_via_cte_refuses():
+    """A T5 reference must be caught through CTE mediation, not just direct columns."""
+    refuses(
+        "WITH fan AS ("
+        "SELECT t.channel, c.sex FROM transactions t "
+        "JOIN customers c ON t.customer_id = c.customer_id) "
+        "SELECT channel, COUNT(*) FROM fan GROUP BY channel, sex",
+        "fair_lending",
+        policy.FLOOR_PROTECTED_CLASS,
+    )
+
+
+@pytest.mark.parametrize("role", ["analyst", "reviewer"])
+def test_t5_business_grain_grouping_denied_for_roles_without_t5(role):
+    """Same statement shape for roles that lack T5: plain column denial (unchanged)."""
+    refuses(
+        "SELECT c.sex, COUNT(*) FROM transactions t "
+        "JOIN customers c ON t.customer_id = c.customer_id GROUP BY c.sex",
+        role,
+        policy.COLUMN_DENIED,
+    )
+
+
+def test_fair_lending_business_grain_non_t5_grouping_succeeds():
+    """Over-refusal guard: legitimate business metrics keep the normal pipeline."""
+    report = executes(
+        "SELECT t.channel, COUNT(*) FROM transactions t "
+        "JOIN customers c ON t.customer_id = c.customer_id GROUP BY t.channel",
+        "fair_lending",
+    )
+    # 17 in-scope transactions: t010/t019 excluded with their offboarded customers.
+    assert {row["channel"]: row["_col_1"] for row in report.rows} == {
+        "ach": 7,
+        "card": 4,
+        "check": 1,
+        "wire": 5,
+    }
+    assert report.notes == []
+
+
+def test_fair_lending_business_grain_currency_and_rule_grouping_succeeds():
+    report = executes(
+        "SELECT t.currency, COUNT(*) FROM transactions t "
+        "JOIN customers c ON t.customer_id = c.customer_id GROUP BY t.currency",
+        "fair_lending",
+    )
+    assert {row["currency"]: row["_col_1"] for row in report.rows} == {
+        "EUR": 1,
+        "MXN": 1,
+        "USD": 15,
+    }
+    report = executes(
+        "SELECT a.rule_id, COUNT(*) FROM alerts a "
+        "JOIN transactions t ON a.txn_id = t.txn_id "
+        "JOIN customers c ON t.customer_id = c.customer_id GROUP BY a.rule_id",
+        "fair_lending",
+    )
+    # 13 in-scope alerts: a014 rides the excluded offboarded customer c004's transaction.
+    assert {row["rule_id"]: row["_col_1"] for row in report.rows} == {
+        "R-CARD-TESTING": 1,
+        "R-SANCTIONS": 3,
+        "R-STRUCTURING": 5,
+        "R-VELOCITY": 4,
+    }
+    assert report.notes == []
+
+
 # ---------------------------------------------------------------- T5 boundary conditions (pure)
 
 

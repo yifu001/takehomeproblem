@@ -20,7 +20,11 @@ statement; the model's original SQL is never executed by this stage.
    reportable only when the population in scope is >= 10 distinct customers and every
    reported cell is >= 3; cells below 3 are suppressed, and when suppression would leave
    a single suppressed cell (derivable from the reported rest) the whole breakdown
-   refuses with `floor_protected_class`.
+   refuses with `floor_protected_class`. Outside the sanctioned path, ANY reference to a
+   protected-class attribute refuses with `floor_protected_class` at any statement
+   grain: a business-grain statement may join customers for row scope, but grouping
+   keys, projections, or filters that reference T5 attributes over its fanned-out rows
+   are a breakdown the floors cannot verify.
 
 Suppression notes state the policy threshold only — never sizes, group names, or how
 many groups were dropped — so they cannot enable derivation when combined with totals.
@@ -518,6 +522,26 @@ def _customer_grained(tree: exp.Expression, scopes: dict[int, object]) -> bool:
     )
 
 
+def _refuse_t5_outside_sanctioned_path(resolved: list[tuple[exp.Column, str, str]]) -> None:
+    """Refuse any protected-class reference outside the sanctioned path, at any grain.
+
+    The business-grain exemption exists so transaction/alert metrics can join customers
+    for row scope without tripping the customer floors. It must not reopen the
+    protected-class reporting rule: a grouping key, projection, or filter that references
+    race/ethnicity/sex over business rows is a T5 breakdown whose per-group counts are
+    fanned-out row counts, not distinct-customer counts, so the population and cell
+    floors cannot be verified on it. Checked over every resolved column reference (any
+    clause position, including through CTEs and subqueries) — fail closed.
+    """
+    for _, table, column in resolved:
+        if table == "customers" and column in T5_ATTRIBUTES:
+            raise policy._refuse(
+                policy.FLOOR_PROTECTED_CLASS,
+                "protected-class attributes may only be broken down through the sanctioned "
+                "customer-aggregate path, never over business-grain rows",
+            )
+
+
 def enforce(
     tree: exp.Expression,
     resolved: list[tuple[exp.Column, str, str]],
@@ -530,5 +554,6 @@ def enforce(
     if role == "fair_lending" and _customer_grained(tree, scopes):
         return _sanctioned_path(tree, resolved, params, sql_requested)
     if role == "fair_lending":
+        _refuse_t5_outside_sanctioned_path(resolved)
         return FloorOutcome()  # business-grain metrics: the normal pipeline applies
     return _k_floor(tree, scopes, params)

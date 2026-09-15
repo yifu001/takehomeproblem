@@ -138,6 +138,20 @@ every argument passed to `make_chart` — for values the acting user is not enti
    graph, and the interface should render it. What belongs on that screen is a judgement
    call.
 
+## The interface
+
+```bash
+python -m uvicorn interface.app:app --host 127.0.0.1 --port 3123   # serves the SPA and the API
+```
+
+Then open http://localhost:3123. Vanilla JS + locally vendored Vega-Lite (`interface/static/vendor/`), no build step, no CDN at runtime.
+
+**What is on the screen, on purpose:** the acting identity with its role badge and the server-resolved access scope (`GET /scope/{user_id}`, the same mapping every audit record carries); the message thread with multi-turn follow-ups; inline Vega-Lite charts rendered from the turn's authorized result handle; a collapsed-by-default transparency panel per assistant message (tool calls, the post-rewrite SQL that actually executed, rewrites applied, refusals with their category, and the audit record's scope fields); and three visually distinct non-answer states — a red-bordered **Access denied** card carrying the audit record's refusal category, a neutral gray **No matching rows** state for in-scope zero-row results, and a blue interactive **clarify card** whose inline reply continues the same conversation. Agent failures (including a conversation id left stale by a service restart) render an amber error card with a recovery action, never a silent empty answer.
+
+**What is deliberately left off:** raw model transcripts, token counts and dollar costs, and any affordance to "fix" or override a refusal. A refusal is an answer; the screen says what the agent did (tool calls, executed SQL) but not what the model internally said.
+
+**Identity switching:** switching returns to the picker; the previous conversation is parked in memory and resumes only when that same identity is picked again. Every conversation is bound to its first identity server-side — posting to it under a different identity is a 409 — so cross-identity content cannot appear in either direction. Nothing persists across a page reload: a reload always starts at the picker with an empty thread.
+
 ## Deliverables
 
 A branch or patch, plus a `NOTES.md` of about two pages:

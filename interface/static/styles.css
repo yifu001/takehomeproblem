@@ -1,0 +1,501 @@
+/* Fraud Ops Assistant — styles.
+ *
+ * The four non-plain turn states are deliberately distinct from each other and from
+ * a plain answer:
+ *   .refusal-card  — red border, "Access denied", the audit record's reason category
+ *   .empty-state / .empty-chart — neutral gray, "No matching rows" (no denial language)
+ *   .clarify-card  — blue, an interactive prompt with its own reply input
+ *   .error-card    — amber, service-failure notice with (for stale conversations) a
+ *                    recovery action
+ */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --ink: #17202b;
+  --muted: #5b6673;
+  --line: #d9dee5;
+  --accent: #2563eb;
+  --accent-ink: #ffffff;
+  --danger: #b91c1c;
+  --danger-bg: #fef2f2;
+  --danger-line: #b91c1c;
+  --amber: #92400e;
+  --amber-border: #d97706;
+  --amber-bg: #fffbeb;
+  --neutral-bg: #f3f4f6;
+  --neutral-ink: #4b5563;
+  --clarify: #1d4ed8;
+  --clarify-bg: #eef4ff;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.app { height: 100vh; display: flex; flex-direction: column; }
+
+.hidden { display: none !important; }
+
+/* ------------------------------------------------------------- chat shell */
+
+.chat-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.identity-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 12px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.identity-main { display: flex; align-items: center; gap: 10px; }
+
+.acting-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.identity-name { font-size: 16px; }
+
+.identity-region { color: var(--muted); font-size: 14px; }
+
+.scope-line {
+  flex: 1 1 320px;
+  font-size: 13px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.switch-btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.switch-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.msg { max-width: 860px; width: 100%; margin: 0 auto; }
+
+.msg.user { align-self: flex-end; display: flex; justify-content: flex-end; width: auto; max-width: 70%; }
+
+.msg.user .msg-text {
+  margin: 0;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 10px 14px;
+  border-radius: 14px 14px 4px 14px;
+}
+
+.msg.assistant {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.answer-body {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px 14px 14px 14px;
+  padding: 12px 16px;
+}
+
+.answer-text { margin: 0; white-space: pre-wrap; }
+
+.pending-note {
+  margin: 0 auto;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 14px;
+}
+
+.blocked-hint {
+  margin: 0 auto 6px;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+/* ------------------------------------------------------------- composer */
+
+.composer {
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 20px 8px;
+}
+
+.composer-form { display: flex; gap: 10px; max-width: 860px; margin: 0 auto; }
+
+.question-input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.question-input:disabled { background: var(--neutral-bg); color: var(--muted); }
+
+.question-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.send-btn {
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 15px;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+.send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.composer-note {
+  max-width: 860px;
+  margin: 6px auto 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------- identity picker */
+
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 24px;
+}
+
+.picker-panel {
+  background: var(--panel);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
+  padding: 28px 32px;
+  max-width: 760px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.picker-title { margin: 0 0 6px; font-size: 24px; }
+
+.picker-subtitle { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+
+.identity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.picker-loading { color: var(--muted); grid-column: 1 / -1; margin: 0; }
+
+.identity-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.identity-card:hover { border-color: var(--accent); box-shadow: 0 4px 14px rgba(37, 99, 235, 0.15); }
+
+.identity-card-name { font-weight: 600; font-size: 15px; }
+
+.identity-card-region { color: var(--muted); font-size: 13px; }
+
+.identity-card-id {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.picker-error { color: var(--danger); font-size: 14px; }
+
+.retry-btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ----------------------------------------------------------------- badges */
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.badge-analyst { background: #dbeafe; color: #1e40af; }
+.badge-reviewer { background: #ccfbf1; color: #115e59; }
+.badge-compliance { background: #ede9fe; color: #5b21b6; }
+.badge-fair_lending { background: #fef3c7; color: #92400e; }
+.badge-admin { background: #e2e8f0; color: #334155; }
+
+/* --------------------------------------------------- the four card states */
+
+/* Access refusal: red-bordered, names access as the reason, shows the audit's
+   reason category. No retry or override affordance is offered on purpose. */
+.refusal-card {
+  border: 2px solid var(--danger-line);
+  background: var(--danger-bg);
+  border-radius: 4px 14px 14px 14px;
+  padding: 12px 16px;
+}
+
+.refusal-title {
+  margin: 0 0 6px;
+  color: var(--danger);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.refusal-category {
+  display: inline-block;
+  background: var(--danger);
+  color: #ffffff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin-bottom: 8px;
+}
+
+.refusal-reason { margin: 0; }
+
+/* Neutral empty result: gray, no denial language. */
+.empty-state, .empty-chart {
+  background: var(--neutral-bg);
+  border: 1px solid var(--line);
+  color: var(--neutral-ink);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.empty-state-title { font-weight: 600; }
+
+.empty-state-detail, .empty-chart { font-size: 13px; }
+
+/* Clarify prompt: blue, interactive, invites an answer in the same thread. */
+.clarify-card {
+  border: 2px solid var(--clarify);
+  background: var(--clarify-bg);
+  border-radius: 4px 14px 14px 14px;
+  padding: 12px 16px;
+}
+
+.clarify-title { margin: 0 0 6px; color: var(--clarify); font-weight: 700; font-size: 15px; }
+
+.clarify-question { margin: 0 0 10px; font-size: 15px; }
+
+.clarify-reply-form { display: flex; gap: 8px; }
+
+.clarify-reply-input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  background: #ffffff;
+}
+
+.clarify-reply-input:focus { outline: 2px solid var(--clarify); outline-offset: -1px; }
+
+.clarify-reply-btn {
+  border: none;
+  border-radius: 8px;
+  background: var(--clarify);
+  color: #ffffff;
+  padding: 8px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.clarify-reply-btn:disabled, .clarify-reply-input:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.clarify-note { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+
+/* Service failure: amber, distinct from refusals and empty results. */
+.error-card {
+  border: 2px solid var(--amber-border);
+  background: var(--amber-bg);
+  border-radius: 4px 14px 14px 14px;
+  padding: 12px 16px;
+}
+
+.error-title { margin: 0 0 6px; color: var(--amber); font-weight: 700; font-size: 15px; }
+
+.error-text { margin: 0 0 8px; }
+
+.error-recovery-btn {
+  border: 1px solid var(--amber-border);
+  background: #ffffff;
+  color: var(--amber);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ charts */
+
+.chart-area { margin-top: 10px; }
+
+.chart-container { width: 100%; }
+
+.chart-container .vega-embed { width: 100%; }
+
+.chart-data { margin-top: 8px; font-size: 13px; }
+
+.chart-data summary { cursor: pointer; color: var(--muted); }
+
+.chart-data-table { border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+
+.chart-data-table th, .chart-data-table td {
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.chart-fallback-note { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+
+.chart-fallback-table { border-collapse: collapse; font-size: 13px; }
+
+.chart-fallback-table th, .chart-fallback-table td {
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+/* ------------------------------------------------------ transparency panel */
+
+.transparency {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcfe;
+  font-size: 13px;
+}
+
+.transparency-summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.transparency-summary:hover { color: var(--accent); }
+
+.transparency-body { padding: 4px 14px 12px; border-top: 1px solid var(--line); }
+
+.transparency-section h4 { margin: 10px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+
+.transparency-empty { margin: 4px 0; color: var(--muted); }
+
+.tool-call-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+
+.tool-call {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.sql-line { display: flex; flex-direction: column; gap: 2px; }
+
+.sql-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+
+.sql-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--neutral-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-meta { margin: 0; color: var(--muted); font-size: 12px; }
+
+.tool-refusal {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.audit-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0;
+}
+
+.audit-grid dt { color: var(--muted); }
+
+.audit-grid dd {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-word;
+}

@@ -2,10 +2,68 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fraud Ops Assistant</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>Fraud Ops Assistant</h1>
-  <p>Interface placeholder. The chat application loads here.</p>
+  <div id="app" class="app">
+
+    <!-- Chat shell: always in the DOM; gated behind the identity picker on first load. -->
+    <section id="chat-screen" class="chat-screen" aria-label="Chat">
+
+      <!-- Acting-identity header: hidden until an identity is chosen. -->
+      <header id="identity-header" class="identity-header hidden">
+        <div class="identity-main">
+          <span class="acting-label">Acting as</span>
+          <strong id="identity-name" class="identity-name"></strong>
+          <span id="identity-role-badge" class="badge"></span>
+          <span id="identity-region" class="identity-region"></span>
+        </div>
+        <div id="identity-scope" class="scope-line"></div>
+        <button id="switch-identity-btn" type="button" class="switch-btn">Switch identity</button>
+      </header>
+
+      <!-- Message thread: empty until a question is asked. -->
+      <main id="thread" class="thread" role="log" aria-label="Message thread"></main>
+
+      <p id="blocked-hint" class="blocked-hint hidden" role="alert">
+        Choose an identity first — the assistant needs to know whose permissions to apply.
+      </p>
+
+      <footer class="composer">
+        <form id="composer-form" class="composer-form">
+          <input id="question-input" class="question-input" type="text" autocomplete="off"
+                 placeholder="Ask a question about your data…" disabled>
+          <button id="send-btn" class="send-btn" type="submit" disabled>Ask</button>
+        </form>
+        <p class="composer-note">Every turn runs under the chosen identity's access policy.</p>
+      </footer>
+
+    </section>
+
+    <!-- Identity picker overlay: shown on load and whenever the identity is switched. -->
+    <div id="picker-overlay" class="picker-overlay">
+      <section class="picker-panel" aria-label="Identity picker">
+        <header class="picker-header">
+          <h1 class="picker-title">Fraud Ops Assistant</h1>
+          <p class="picker-subtitle">
+            Choose an identity to start a session. Your role and region decide what the
+            assistant can see — the server enforces it on every turn.
+          </p>
+        </header>
+        <div id="identity-grid" class="identity-grid"></div>
+        <p id="picker-error" class="picker-error hidden" role="alert"></p>
+        <button id="picker-retry-btn" type="button" class="retry-btn hidden">Try again</button>
+      </section>
+    </div>
+
+  </div>
+
+  <!-- Vega-Lite runtime, vendored locally (no CDN at runtime, no build step). -->
+  <script src="vendor/vega.min.js"></script>
+  <script src="vendor/vega-lite.min.js"></script>
+  <script src="vendor/vega-embed.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

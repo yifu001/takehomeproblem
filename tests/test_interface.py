@@ -297,6 +297,24 @@ def test_error_bodies_never_echo_question_sql_or_traceback(client, monkeypatch):
         assert "marker-answer-Zz42" not in body, body
 
 
+# ---------------------------------------------------------------- GET /scope display
+
+
+def test_scope_endpoint_returns_the_audit_resolution(client):
+    response = client.get("/scope/u_ana")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == audit.resolved_scope(db.get_user("u_ana"))  # single-sourced with the audit record
+    assert body["row_scope"] == "region='WEST' AND deleted_at IS NULL"
+    assert body["column_tiers"] == ["T0", "T1"]
+
+
+def test_scope_endpoint_all_roles_and_unknown_user(client):
+    for user_id in ("u_ben", "u_cora", "u_fern", "u_ops", "u_rae"):
+        assert client.get(f"/scope/{user_id}").status_code == 200, user_id
+    assert client.get("/scope/u_ghost").status_code == 404
+
+
 # ---------------------------------------------------------------- served assets and env
 
 
@@ -306,6 +324,18 @@ def test_static_index_served_and_clean(client):
         assert response.status_code == 200, path
         lowered = response.text.lower()
         assert "openai" not in lowered and "sk-" not in lowered and "select " not in lowered
+
+
+def test_static_app_js_served_and_clean(client):
+    """VAL-UI-015: the SPA's own code carries no key material and no enforcement logic —
+    presentation only, every decision stays server-side."""
+    response = client.get("/app.js")
+    assert response.status_code == 200
+    body = response.text
+    assert "OPENAI" not in body
+    assert "sk-" not in body
+    assert "Authorization" not in body
+    assert "api.openai" not in body
 
 
 def test_env_loader_reads_file_only_when_unset(monkeypatch, tmp_path):

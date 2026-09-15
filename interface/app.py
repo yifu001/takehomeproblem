@@ -37,6 +37,11 @@ HTTP contract (architecture §7):
       never row values). user_id is required for scoping: unknown user -> 404,
       nonexistent conversation -> 404, another identity's conversation -> 403.
 
+  GET /scope/{user_id}
+      The identity's server-resolved access scope (audit.resolved_scope — the same
+      mapping every audit record carries) for the UI's header display after the
+      identity is picked and before the first turn. Unknown user -> 404.
+
 Every error body is structured JSON ({error: {code, message}}) that never echoes
 SQL, warehouse data, or stack traces. Conversation bindings live in-process, so the
 service runs a single worker; a restart makes old conversation ids unknown (404),
@@ -293,6 +298,19 @@ def get_audit(conversation_id: str, user_id: str) -> list[dict]:
                 },
             )
     return records
+
+
+@app.get("/scope/{user_id}")
+def get_scope(user_id: str) -> dict:
+    """The server-resolved access scope for one identity, for the UI's header display.
+
+    The same audit.resolved_scope mapping every audit record carries — served separately
+    so the header can show the acting authority after the identity is picked and before
+    the first turn, and it can never drift from what the audit trail records. Metadata
+    only (tiers, row scope, table denials); never any warehouse data.
+    """
+    user = _resolve_user(user_id)
+    return audit.resolved_scope(user)
 
 
 app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")

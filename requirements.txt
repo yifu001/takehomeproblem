@@ -1,2 +1,6 @@
 openai>=1.50.0
 PyYAML>=6.0
+sqlglot==30.18.0
+fastapi==0.141.1
+uvicorn==0.53.0
+pytest==9.1.1

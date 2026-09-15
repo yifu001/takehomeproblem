@@ -104,6 +104,20 @@ def test_group_by_all_groups_sub_floor_refuses():
     )  # every WEST active risk score is unique: every group is a single customer
 
 
+def test_group_by_t0_key_from_clause_position_matrix_trips_floor():
+    """From the clause-position matrix (VAL-LEAK-024 probe): grouping by an authorized
+    T0 column whose every in-scope value is unique trips the FLOOR, not a column
+    denial — the refusal reason is k-anonymity, and the statement never executes."""
+    report = refuses(
+        "SELECT segment, COUNT(*) FROM customers GROUP BY risk_score",
+        "analyst",
+        policy.FLOOR_K_ANONYMITY,
+    )
+    assert report.sql_executed is not None
+    assert "1 distinct customer" in report.refusal.detail or "fewer than 2" in report.refusal.detail
+    assert report.rows == []
+
+
 def test_grouped_exactly_two_per_group_succeeds_without_rewrite():
     report = executes(
         "SELECT income_band, COUNT(*) FROM customers GROUP BY income_band", "analyst"

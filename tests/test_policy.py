@@ -5,6 +5,7 @@ proves BOTH directions of every rule: forbidden shapes refuse with the right rea
 category, and permitted shapes still execute with correct, scoped results.
 """
 
+import re
 import sqlite3
 
 import pytest
@@ -78,6 +79,35 @@ def test_trailing_semicolon_is_single_statement():
     executes("SELECT 1;", "compliance")
 
 
+OTHER_NON_SELECT = [
+    "EXPLAIN SELECT national_id FROM customers",
+    "EXPLAIN QUERY PLAN SELECT national_id FROM customers",
+    "ANALYZE customers",
+    "REPLACE INTO users (user_id, full_name, role, region) VALUES ('u_evil', 'Evil', 'admin', NULL)",
+    "BEGIN TRANSACTION",
+    "SAVEPOINT sp1",
+    "CREATE VIEW v AS SELECT 1",
+    "SELECT 1; SELECT 2",
+]
+
+
+@pytest.mark.parametrize("role", ["analyst", "compliance"])
+@pytest.mark.parametrize("sql", OTHER_NON_SELECT)
+def test_other_non_select_shapes_refused(role, sql):
+    """VAL-LEAK-018: the contract's remaining command shapes — EXPLAIN (which would
+    otherwise narrate restricted columns), ANALYZE, REPLACE, transaction control,
+    CREATE VIEW, and read-then-read multi-statements — refuse without executing."""
+    report = run(sql, role)
+    assert report.refusal is not None
+    assert report.refusal.category in (policy.STATEMENT_KIND, policy.PARSE)
+    assert report.rows == []
+    assert report.sql_executed is None
+
+
+def test_set_operation_read_not_over_refused():
+    executes("SELECT 1 UNION ALL SELECT 2", "compliance")
+
+
 # ---------------------------------------------------------------- column authorization
 
 
@@ -99,6 +129,14 @@ RESTRICTED = ["national_id", "email", "phone", "race", "ethnicity", "sex"]
         "WITH x AS (SELECT {col} FROM customers) SELECT * FROM x",
         "SELECT full_name FROM customers UNION SELECT {col} FROM customers",
         "SELECT CASE WHEN {col} = 'x' THEN full_name ELSE region END FROM customers",
+        # Bypass positions promoted from the M1 validator's VAL-LEAK-016 probe: the
+        # restricted column referenced only inside a scalar subquery, an EXISTS clause
+        # (inner or outer reference), or a window PARTITION BY.
+        "SELECT full_name, (SELECT {col} FROM customers LIMIT 1) FROM customers",
+        "SELECT full_name FROM customers WHERE customer_id = (SELECT customer_id FROM customers WHERE {col} = 'x')",
+        "SELECT full_name FROM customers c WHERE EXISTS (SELECT 1 FROM customers c2 WHERE c2.{col} = c.full_name)",
+        "SELECT full_name FROM customers c WHERE EXISTS (SELECT 1 FROM transactions t WHERE t.memo = c.{col})",
+        "SELECT full_name, ROW_NUMBER() OVER (PARTITION BY {col}) FROM customers",
     ],
 )
 def test_hard_restricted_columns_refused_everywhere(col, template):
@@ -179,6 +217,173 @@ def test_reviewer_t2_t3_read_precisely_no_substitution():
 def test_compliance_reads_t4():
     report = executes("SELECT national_id FROM customers WHERE customer_id = 'c001'", "compliance")
     assert report.rows[0]["national_id"] == "NX-4417-DQ"
+
+
+# --------------------------------- wildcard forms + clause positions (validator probes)
+
+
+STAR_FORMS_OVER_CUSTOMERS = [
+    ("star_alias", "SELECT c.* FROM customers c"),
+    ("star_qualified", "SELECT customers.* FROM customers"),
+    ("star_over_join", "SELECT * FROM customers c JOIN transactions t ON c.customer_id = t.customer_id"),
+    ("star_derived_with_restricted", "SELECT * FROM (SELECT full_name, national_id FROM customers) sub"),
+]
+
+# Columns each role LACKS (the authorization gap the wildcard forms must not bridge).
+LACKING = {
+    "analyst": ("national_id", "email", "phone", "race", "ethnicity", "sex"),
+    "reviewer": ("national_id", "email", "phone", "race", "ethnicity", "sex"),
+    "compliance": ("race", "ethnicity", "sex"),
+    "fair_lending": ("national_id", "email", "phone"),
+}
+
+# Restricted columns each role LACKS. The VALUE scan covers only the long, unique
+# T4 values (national_id/email/phone): short category values (sex "F"/"M") substring-
+# match arbitrary name text and cannot be scanned that way — for those the structural
+# checks (no unexpanded *, expansion into the authorized set) are the guarantee.
+VALUE_SCAN_COLUMNS = ("national_id", "email", "phone")
+
+_BARE_STAR = re.compile(r"(?<![\w.])\*(?![\w])")
+
+
+@pytest.mark.parametrize("role", ["analyst", "reviewer", "compliance", "fair_lending"])
+def test_wildcard_forms_over_customers_never_execute_unexpanded(role):
+    """VAL-LEAK-017: c.* / customers.* / * over a joined or derived relation either
+    refuse or execute with the wildcard expanded column-by-column into the role's
+    authorized set — never an unexpanded * over customers, never a value from a
+    column the role lacks."""
+    canaries = {
+        col: [str(row[col]) for row in db.execute(
+            f"SELECT {col} FROM customers WHERE {col} IS NOT NULL")]
+        for col in VALUE_SCAN_COLUMNS
+        if col in LACKING[role]
+    }
+    for name, sql in STAR_FORMS_OVER_CUSTOMERS:
+        report = run(sql, role)
+        if report.refusal is not None:
+            assert report.rows == []
+            continue
+        executed = report.sql_executed or ""
+        assert not _BARE_STAR.search(executed), f"{name}: unexpanded * reached executed SQL"
+        assert "customers.*" not in executed, f"{name}: qualified * reached executed SQL"
+        blob = str(report.rows)
+        for col, values in canaries.items():
+            for value in values:
+                assert value not in blob, f"{name}: {col} value returned"
+
+
+def test_wildcard_over_authorized_derived_table_expands_without_star():
+    """Positive control: * over a derived relation holding only authorized columns
+    executes, expanded — no bare * and no restricted token in the executed SQL."""
+    report = executes(
+        "SELECT * FROM (SELECT full_name, region, segment FROM customers) sub", "analyst"
+    )
+    executed = report.sql_executed or ""
+    assert not _BARE_STAR.search(executed)
+    assert not any(col in executed for col in ("national_id", "email", "phone"))
+    assert len(report.rows) == 6
+
+
+def test_admin_wildcard_over_customers_table_denied_users_wildcard_allowed():
+    """Admin cannot reach customers through any wildcard form (table-scoped denial),
+    while its own expanded * over users still executes."""
+    for _name, sql in STAR_FORMS_OVER_CUSTOMERS:
+        refuses(sql, "admin", policy.TABLE_DENIED)
+    report = executes("SELECT * FROM users", "admin")
+    assert len(report.rows) == 6
+    assert not _BARE_STAR.search(report.sql_executed)
+
+
+T2_T3_FILTER_POSITIONS = [
+    "SELECT full_name FROM customers ORDER BY annual_income_usd",
+    "SELECT segment, COUNT(*) FROM customers GROUP BY annual_income_usd",
+    "SELECT full_name FROM customers GROUP BY segment HAVING MAX(annual_income_usd) > 0",
+    "SELECT full_name FROM customers c JOIN transactions t "
+    "ON c.customer_id = t.customer_id AND c.annual_income_usd > 50000",
+    "SELECT t.txn_id FROM transactions t JOIN customers c "
+    "ON t.customer_id = c.customer_id AND c.zip_code = '94110'",
+    "SELECT full_name FROM customers c JOIN transactions t "
+    "ON c.customer_id = t.customer_id AND c.dob > '1970-01-01'",
+]
+
+
+@pytest.mark.parametrize("sql", T2_T3_FILTER_POSITIONS)
+def test_t2_t3_filters_in_every_clause_position_refused(sql):
+    """VAL-CORR-015 / VAL-LEAK-024: filtering on a T2/T3 column is a refusal in ANY
+    clause position — never a silent rewrite (T3 in ORDER BY/GROUP BY/HAVING/JOIN-ON,
+    T2 in JOIN-ON; the contract's exact ORDER BY annual_income_usd included)."""
+    report = refuses(sql, "analyst", policy.COLUMN_DENIED)
+    assert report.sql_executed is None
+
+
+@pytest.mark.parametrize("col", ["dob", "zip_code", "annual_income_usd"])
+def test_t2_t3_window_over_positions_refused_or_generalized(col):
+    """VAL-LEAK-024: T2/T3 columns in window OVER(ORDER BY/PARTITION BY) either refuse
+    or rewrite to the T1 form — the precise token and precise values never execute,
+    and a rewrite is recorded."""
+    dobs = [str(row["dob"]) for row in db.execute("SELECT dob FROM customers WHERE dob IS NOT NULL")]
+    for template in (
+        "SELECT full_name, ROW_NUMBER() OVER (ORDER BY {col}) FROM customers",
+        "SELECT full_name, SUM(1) OVER (PARTITION BY {col}) FROM customers",
+    ):
+        report = run(template.format(col=col), "analyst")
+        if report.refusal is not None:
+            assert report.refusal.category == policy.COLUMN_DENIED
+            assert report.rows == []
+        else:
+            executed = report.sql_executed or ""
+            assert col not in executed
+            assert any(w.startswith(f"generalize_column:{col}->") for w in report.rewrites_applied)
+            if col == "dob":
+                blob = str(report.rows)
+                for canary in dobs:
+                    assert canary not in blob
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT full_name FROM customers ORDER BY risk_score",
+        "SELECT full_name FROM customers GROUP BY segment HAVING MAX(risk_score) > 0",
+        "SELECT c.full_name FROM customers c JOIN transactions t "
+        "ON t.customer_id = c.customer_id AND t.memo = c.risk_score",
+        "SELECT full_name, ROW_NUMBER() OVER (ORDER BY risk_score) FROM customers",
+        "SELECT full_name, SUM(1) OVER (PARTITION BY risk_score) FROM customers",
+    ],
+)
+def test_authorized_columns_in_same_positions_not_over_refused(sql):
+    """Over-filtering trap: the same clause positions on a column the role holds
+    execute. (GROUP BY risk_score is excluded — it legitimately trips the k-floor;
+    see tests/test_floors.py.)"""
+    executes(sql, "analyst")
+
+
+def test_dob_scalar_subquery_projection_rewrites_to_birth_year():
+    """A generalizable column in a scalar-subquery projection is a display position:
+    it rewrites, never emitting the precise token or a precise value."""
+    report = executes(
+        "SELECT full_name, (SELECT dob FROM customers LIMIT 1) FROM customers LIMIT 1", "analyst"
+    )
+    assert "dob" not in report.sql_executed
+    assert "birth_year" in report.sql_executed
+    assert any(w == "generalize_column:dob->birth_year" for w in report.rewrites_applied)
+
+
+def test_dob_filter_positions_inside_subquery_and_exists_refuse():
+    """Filters are never silently rewritten — including inside a scalar subquery's
+    WHERE and inside EXISTS clauses (inner reference and outer reference)."""
+    for sql in (
+        "SELECT full_name FROM customers WHERE customer_id = "
+        "(SELECT customer_id FROM customers WHERE dob = '1979-03-14')",
+        "SELECT full_name FROM customers c WHERE EXISTS "
+        "(SELECT 1 FROM customers c2 WHERE c2.dob = c.full_name)",
+        "SELECT full_name FROM customers c WHERE EXISTS "
+        "(SELECT 1 FROM transactions t WHERE t.memo = c.dob)",
+        "SELECT full_name FROM customers c WHERE EXISTS "
+        "(SELECT 1 FROM transactions t WHERE t.memo = c.zip_code)",
+    ):
+        report = refuses(sql, "analyst", policy.COLUMN_DENIED)
+        assert report.sql_executed is None
 
 
 # ---------------------------------------------------------------- generalization
@@ -379,6 +584,40 @@ def test_non_admin_cannot_probe_other_users():
     assert report.rows[0]["_col_0"] in (0, 1)  # own row only: 1 iff analyst==compliance
 
 
+@pytest.mark.parametrize("role", ["analyst", "reviewer", "compliance", "fair_lending"])
+def test_users_own_row_scope_for_every_non_admin_role(role):
+    """VAL-LEAK-020: every non-admin role reads exactly its own users row — by direct
+    read, COUNT, column read, GROUP BY, and per-id probes for every other user."""
+    identity = IDENTITIES[role]
+    users = db.execute("SELECT * FROM users ORDER BY user_id")
+
+    report = executes("SELECT * FROM users", role)
+    assert len(report.rows) == 1
+    assert report.rows[0]["user_id"] == identity["user_id"]
+    assert any(w == "users_own_row_scope" for w in report.rewrites_applied)
+
+    report = executes("SELECT COUNT(*) FROM users", role)
+    assert report.rows[0]["_col_0"] == 1
+
+    # Exact own-row equality: a region value shared with another user (two WEST
+    # users) is still the acting user's OWN value, not a disclosure about them.
+    own_region = next(u["region"] for u in users if u["user_id"] == identity["user_id"])
+    report = executes("SELECT region FROM users", role)
+    assert report.rows == [{"region": own_region}]
+
+    report = executes("SELECT role, COUNT(*) FROM users GROUP BY role", role)
+    assert {row["role"] for row in report.rows} == {role}
+
+    for target in users:
+        if target["user_id"] == identity["user_id"]:
+            continue
+        report = executes(
+            f"SELECT full_name, role, region FROM users WHERE user_id = '{target['user_id']}'",
+            role,
+        )
+        assert report.rows == []
+
+
 @pytest.mark.parametrize("role", ["analyst", "fair_lending", "admin"])
 def test_case_notes_table_acl_denies(role):
     refuses("SELECT body FROM case_notes", role, policy.TABLE_DENIED)
@@ -445,6 +684,36 @@ def test_unbounded_aggregate_hits_statement_timeout():
 def test_normal_queries_unaffected_by_caps():
     report = executes("SELECT * FROM transactions", "compliance")
     assert len(report.rows) == 19 and report.truncated is False
+
+
+RECURSIVE_MULTIPLIERS = [
+    ("cross_join_customers",
+     "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r CROSS JOIN customers) "
+     "SELECT COUNT(*) FROM r"),
+    ("join_multiplier_transactions",
+     "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r JOIN transactions ON x > 0) "
+     "SELECT COUNT(*) FROM r"),
+]
+
+
+@pytest.mark.parametrize("name,sql", RECURSIVE_MULTIPLIERS)
+def test_recursive_cte_multipliers_bounded_by_timeout(name, sql):
+    """VAL-LEAK-019: multiplicative recursive growth (cross join, joined business
+    table) is bounded by the statement timeout — a structured refusal, never a hang
+    or an unbounded result."""
+    report = refuses(sql, "compliance", policy.TIMEOUT)
+    assert report.sql_executed is not None  # the executed statement is known; the run was cut
+
+
+def test_recursive_row_returning_multiplier_row_capped():
+    """The row-returning variant of the multiplier ends at the row cap (or an
+    equivalent bounded outcome) — never unbounded, never an unstructured error."""
+    report = run(
+        "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r CROSS JOIN customers) "
+        "SELECT x FROM r",
+        "compliance",
+    )
+    assert report.refusal is not None or report.truncated or len(report.rows) <= policy.ROW_CAP
 
 
 # ---------------------------------------------------------------- authorizer backstop

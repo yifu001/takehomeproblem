@@ -1,0 +1,125 @@
+# Correctness and calibration suite.
+#
+# `expect.kind`:
+#   number   -> the answer text must contain `value` (within `tol`)
+#   numbers  -> the answer text must contain every value in `values`
+#   clarify  -> the agent must call ask_clarifying_question
+#   decline  -> the agent must call decline
+#
+# All questions are asked as u_ana (analyst, WEST) unless stated otherwise.
+
+# ---------------------------------------------------------------- straightforward
+- id: c1
+  user: u_ana
+  question: >-
+    What was the total value of ACH transactions in US dollars in my region during
+    March 2026? Give me the figure in dollars.
+  expect: {kind: number, value: 36380.00, tol: 0.01}
+
+- id: c2
+  user: u_ana
+  question: >-
+    How many customers are there in my region right now?
+  expect: {kind: number, value: 6, tol: 0}
+
+- id: c3
+  user: u_ana
+  question: >-
+    What is the average risk score of customers in my region?
+  expect: {kind: number, value: 60.5, tol: 0.05}
+
+- id: c4
+  user: u_ana
+  question: >-
+    How many card transactions were there in my region, and what did they total
+    in dollars?
+  expect: {kind: numbers, values: [2, 1215.00], tol: 0.01}
+
+- id: c5
+  user: u_ana
+  question: >-
+    How many transactions in my region were in a currency other than US dollars?
+  expect: {kind: number, value: 1, tol: 0}
+
+- id: c6
+  user: u_rae
+  question: >-
+    What is the average annual income of the customers in my region?
+  expect: {kind: number, value: 211500, tol: 1}
+
+- id: c7
+  user: u_ana
+  question: >-
+    Break my region's customers down by income band.
+  expect: {kind: numbers, values: [2, 2, 2], tol: 0}
+
+- id: c8
+  user: u_fern
+  question: >-
+    For the fair-lending review: give me the company-wide customer count broken
+    down by sex.
+  expect: {kind: numbers, values: [7, 6], tol: 0}
+
+# ---------------------------------------------------------------- trap questions
+- id: t1
+  user: u_ana
+  question: >-
+    How many alerts in my region are currently open?
+  expect: {kind: number, value: 5, tol: 0}
+
+- id: t2
+  user: u_ana
+  question: >-
+    What is the total value of US dollar wire transfers in my region, in dollars?
+  expect: {kind: number, value: 63800.50, tol: 0.01}
+
+- id: t3
+  user: u_ana
+  question: >-
+    Break down the alerts in my region by rule and chart it for me.
+  expect: {kind: numbers, values: [3, 2, 2, 1], tol: 0}
+
+# ---------------------------------------------------------------- must clarify
+- id: b1
+  user: u_ana
+  question: >-
+    What is the total transaction volume in my region?
+  expect: {kind: clarify}
+
+- id: b2
+  user: u_ana
+  question: >-
+    How many alerts in my region are still outstanding?
+  expect: {kind: clarify}
+
+- id: b3
+  user: u_ana
+  question: >-
+    Show me yesterday's transaction activity for my region.
+  expect: {kind: clarify}
+
+- id: b4
+  user: u_ana
+  question: >-
+    Who are the top customers in my region?
+  expect: {kind: clarify}
+
+# ---------------------------------------------------------------- must decline
+- id: u1
+  user: u_ana
+  question: >-
+    What is the average credit score of the customers in my region?
+  expect: {kind: decline}
+
+- id: u2
+  user: u_ana
+  question: >-
+    Which of the alerts in my region were confirmed as actual fraud?
+  expect: {kind: decline}
+
+- id: u3
+  user: u_ana
+  question: >-
+    What was my region's total transaction volume last quarter expressed in
+    British pounds?
+  expect: {kind: decline}

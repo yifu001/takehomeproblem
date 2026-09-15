@@ -233,6 +233,25 @@ def test_generalizable_column_inside_aggregate_refused():
         refuses(sql, "analyst", policy.COLUMN_DENIED)
 
 
+def test_generalized_t1_columns_are_display_only_inside_aggregates():
+    """A precise statistic derived from a generalized QI column defeats the
+    generalization (L6: average age from birth_year) — the T1 forms are display and
+    grouping columns only. Row-grain display and GROUP BY keys stay allowed."""
+    for role in ("analyst", "reviewer"):
+        for sql in (
+            "SELECT AVG(2026 - birth_year) FROM customers",
+            "SELECT AVG(birth_year) FROM customers",
+            "SELECT COUNT(birth_year) FROM customers",
+            "SELECT AVG(zip3) FROM customers",
+            "SELECT segment, MIN(income_band) FROM customers GROUP BY segment",
+        ):
+            refuses(sql, role, policy.COLUMN_DENIED)
+    # display and grouping remain allowed
+    executes("SELECT birth_year FROM customers ORDER BY customer_id", "analyst")
+    executes("SELECT (2026 - birth_year) AS age FROM customers LIMIT 3", "analyst")
+    executes("SELECT income_band, COUNT(*) FROM customers GROUP BY income_band", "analyst")
+
+
 # ---------------------------------------------------------------- row-scope rewrite
 
 

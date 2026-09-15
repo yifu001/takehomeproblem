@@ -1,33 +1,38 @@
-"""Tool definitions and dispatch for the baseline agent.
+"""Tool definitions and dispatch for the agent.
 
-This is the layer between the model and the data. Read it closely.
+This is the layer between the model and the data. Every data-bearing tool result is
+produced by the policy engine (agent/policy.py) or by role-scoped introspection here —
+the model never touches the database directly and never supplies identity: the acting
+user is resolved server-side per turn and handed to `dispatch` / `run_sql_tool`.
+
+Error contract: tool failures are normalized to `error: query refused by access policy
+(<reason category>)` — never SQL, never data, never raw sqlite messages.
 """
 
+import json
 import logging
+import secrets
 
-from . import db
+from . import db, policy
 
 log = logging.getLogger("agent.tools")
 
-# Role ranking used to decide who may see restricted columns.
-ROLE_RANK = {"analyst": 1, "fair_lending": 1, "reviewer": 2, "compliance": 3, "admin": 99}
+# Result sets the policy engine has authorized, keyed by an unguessable handle and
+# bound to the identity that created them. make_chart accepts nothing else: hand-written
+# rows cannot reach a chart because the schema has no rows parameter and dispatch
+# charts only policy-issued, identity-owned handles.
+_RESULT_SETS: dict[str, dict] = {}
 
-RESTRICTED_COLUMNS = (
-    "national_id", "dob", "email", "phone",
-    "annual_income_usd", "zip_code",
-    "race", "ethnicity", "sex",
-)
+TERMINAL_TOOLS = {"ask_clarifying_question", "decline"}
 
-# Results are memoised so repeated questions are cheap.
-_QUERY_CACHE: dict[str, list[dict]] = {}
-
+REFUSED = "error: query refused by access policy"
 
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "list_tables",
-            "description": "List the tables available in the warehouse.",
+            "description": "List the warehouse tables your identity is allowed to read.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -35,7 +40,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "describe_table",
-            "description": "Return the CREATE TABLE statement for one table.",
+            "description": (
+                "Return the column names and types of one table your identity is "
+                "allowed to read. Names and types only — never data values."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"table": {"type": "string"}},
@@ -48,21 +56,27 @@ TOOLS = [
         "function": {
             "name": "run_sql",
             "description": (
-                "Run a read-only SQL query against the warehouse and return the rows. "
-                "Pass the role you are currently acting on behalf of so the correct "
-                "access rules are applied."
+                "Run ONE read-only SELECT statement against the warehouse; the matching "
+                "rows come back with a result handle you can pass to make_chart. Never "
+                "supply a role or identity — they are resolved server-side on every "
+                "turn and any role argument is ignored. Do not hand-write scope "
+                "predicates (region filters or deleted_at IS NULL): row scoping is "
+                "applied automatically, and for some roles those columns sit outside "
+                "the allowed set, so the statement is refused. For fair_lending, "
+                "statements over customers must use the sanctioned aggregate shape: "
+                "SELECT <keys>, COUNT(*) FROM customers GROUP BY <keys> with keys from "
+                "region, segment, income_band, race, ethnicity or sex, and filters only "
+                "on region, segment or income_band. transactions and alerts carry no "
+                "region: to answer region-scoped questions about them, join them to "
+                "customers on customer_id — a statement over those tables with no "
+                "customers join is refused."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "sql": {"type": "string", "description": "A single SELECT statement."},
-                    "role": {
-                        "type": "string",
-                        "description": "The role this query is being run on behalf of.",
-                        "enum": ["analyst", "reviewer", "compliance", "admin"],
-                    },
                 },
-                "required": ["sql", "role"],
+                "required": ["sql"],
             },
         },
     },
@@ -71,23 +85,20 @@ TOOLS = [
         "function": {
             "name": "make_chart",
             "description": (
-                "Render a chart. Returns a Vega-Lite spec — do not attempt to draw the "
-                "chart yourself. Pass the rows you want plotted."
+                "Render a Vega-Lite chart from an authorized result set. Pass the "
+                "handle returned by run_sql — never raw rows; hand-written data is "
+                "refused."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "handle": {"type": "string", "description": "The handle run_sql returned."},
                     "mark": {"type": "string", "enum": ["bar", "line", "point"]},
                     "x_field": {"type": "string"},
                     "y_field": {"type": "string"},
                     "title": {"type": "string"},
-                    "rows": {
-                        "type": "array",
-                        "description": "The data to plot, as a list of objects.",
-                        "items": {"type": "object"},
-                    },
                 },
-                "required": ["mark", "x_field", "y_field", "rows"],
+                "required": ["handle", "mark", "x_field", "y_field"],
             },
         },
     },
@@ -124,73 +135,131 @@ TOOLS = [
     },
 ]
 
-TERMINAL_TOOLS = {"ask_clarifying_question", "decline"}
+
+def strip_role_claims(args: dict) -> dict:
+    """Drop identity claims the model smuggled into tool arguments.
+
+    The tool schemas have no role parameter and the server resolves identity per turn;
+    a claim (e.g. dictated by injected text in tool output) is ignored — and, because
+    this runs before anything is recorded, it never reaches the transcript either.
+    """
+    return {key: value for key, value in args.items() if key != "role"}
 
 
-def _run_sql(sql: str, role: str, question: str) -> str:
-    if role not in ROLE_RANK:
-        return f"error: unknown role {role!r}"
-
-    if ROLE_RANK[role] < ROLE_RANK["compliance"]:
-        select_list = sql.lower().split(" from ")[0]
-        for col in RESTRICTED_COLUMNS:
-            if col in select_list:
-                return (
-                    f"error: permission denied on column customers.{col} — "
-                    f"role {role!r} is not cleared for it"
-                )
-
-    cache_key = question
-    if cache_key in _QUERY_CACHE:
-        rows = _QUERY_CACHE[cache_key]
-        log.info("cache hit for %r -> %s", question, rows)
-    else:
-        try:
-            rows = db.execute(sql)
-        except db.SQLError as exc:
-            return f"error: {exc}"
-        _QUERY_CACHE[cache_key] = rows
-        log.info("sql=%s rows=%s", sql, rows)
-
-    if not rows:
-        return "0 rows"
-    header = " | ".join(rows[0].keys())
-    body = "\n".join(" | ".join(str(v) for v in r.values()) for r in rows)
-    return f"{len(rows)} row(s)\n{header}\n{body}"
+def _refusal_text(category: str) -> str:
+    return f"{REFUSED} ({category})"
 
 
-def dispatch(name: str, args: dict, *, question: str) -> str:
-    """Execute one tool call and return the result as text for the model."""
-    if name == "list_tables":
-        return "users, customers, transactions, alerts, case_notes"
+def _normalized_parse_refusal(sql_requested: str) -> policy.ExecutionReport:
+    report = policy.ExecutionReport(sql_requested=sql_requested)
+    report.refusal = policy.Refusal(policy.PARSE, "statement could not be processed")
+    return report
 
-    if name == "describe_table":
-        table = args["table"]
-        for stmt in db.schema_text().split("\n\n"):
-            if f"TABLE {table}" in stmt:
-                return stmt
-        return f"error: no such table {table!r}"
 
+def run_sql_tool(sql: str, user: dict) -> tuple[str, policy.ExecutionReport]:
+    """Run one statement through the policy engine for a server-resolved identity.
+
+    Returns the model-facing text and the ExecutionReport. Refusals serialize as the
+    normalized category-only message; successful results serialize the rows, the
+    floors' suppression notes (never silent), and a chart handle bound to this identity.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        report = _normalized_parse_refusal("")
+        return _refusal_text(report.refusal.category), report
+    try:
+        report = policy.run_query(sql, user)
+    except Exception:  # fail closed: even an internal error is a normalized refusal
+        log.exception("run_sql internal failure — refusing")
+        report = _normalized_parse_refusal(sql)
+        return _refusal_text(report.refusal.category), report
+
+    if report.refusal is not None:
+        log.info("run_sql refused (%s)", report.refusal.category)
+        return _refusal_text(report.refusal.category), report
+
+    handle = "r-" + secrets.token_hex(8)
+    _RESULT_SETS[handle] = {"user_id": user["user_id"], "rows": report.rows}
+    lines = [f"{len(report.rows)} row(s)", f"handle: {handle}"]
+    if report.rows:
+        lines.append(" | ".join(report.rows[0].keys()))
+        lines.extend(" | ".join(str(value) for value in row.values()) for row in report.rows)
+    lines.extend(report.notes)
+    if report.truncated:
+        lines.append("note: results were truncated at the row cap")
+    return "\n".join(lines), report
+
+
+def _readable_tables(role: str) -> list[str]:
+    """Tables the role may read anything from — introspection respects the same ACLs."""
+    if role == "admin":
+        return ["users"]
+    tables = ["customers", "transactions", "alerts", "users"]
+    if role in policy.CASE_NOTES_ROLES:
+        tables.append("case_notes")
+    return sorted(tables)
+
+
+def _list_tables(user: dict) -> str:
+    return ", ".join(_readable_tables(user["role"]))
+
+
+def _describe_table(table: str, user: dict) -> str:
+    """Column names and types only — never a sample value, for any role."""
+    if table not in _readable_tables(user["role"]):
+        return _refusal_text(policy.TABLE_DENIED)
+    with db.connect() as conn:
+        info = conn.execute(f"PRAGMA table_info('{table}')").fetchall()
+    lines = [f"{table} columns (name, type):"]
+    lines.extend(f"  {row[1]} {row[2]}" for row in info)
+    return "\n".join(lines)
+
+
+def _make_chart(args: dict, user: dict) -> str:
+    """Chart one policy-issued result handle. Rows never come from the model."""
+    handle = args.get("handle")
+    entry = _RESULT_SETS.get(handle) if isinstance(handle, str) else None
+    if entry is None or entry["user_id"] != user["user_id"]:
+        return "error: chart refused by access policy (no authorized result set for this handle)"
+    mark = args.get("mark")
+    x_field = args.get("x_field")
+    y_field = args.get("y_field")
+    if mark not in ("bar", "line", "point") or not x_field or not y_field:
+        return "error: chart refused (mark, x_field and y_field are required)"
+    spec = {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "title": args.get("title", ""),
+        "mark": mark,
+        "data": {"values": entry["rows"]},
+        "encoding": {
+            "x": {"field": x_field, "type": "nominal"},
+            "y": {"field": y_field, "type": "quantitative"},
+        },
+    }
+    return f"chart rendered: {json.dumps(spec)}"
+
+
+def dispatch(name: str, args: dict, *, user: dict) -> str:
+    """Execute one tool call and return the result as text for the model.
+
+    `user` is the server-resolved identity (db.get_user) for this turn — never taken
+    from model input. Every data-bearing path runs through the policy engine.
+    """
     if name == "run_sql":
-        return _run_sql(args["sql"], args["role"], question)
-
+        text, _report = run_sql_tool(args.get("sql", ""), user)
+        return text
+    if name == "list_tables":
+        return _list_tables(user)
+    if name == "describe_table":
+        return _describe_table(str(args.get("table", "")), user)
     if name == "make_chart":
-        spec = {
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "title": args.get("title", ""),
-            "mark": args["mark"],
-            "data": {"values": args["rows"]},
-            "encoding": {
-                "x": {"field": args["x_field"], "type": "nominal"},
-                "y": {"field": args["y_field"], "type": "quantitative"},
-            },
-        }
-        return f"chart rendered: {spec}"
-
+        return _make_chart(args, user)
     if name == "ask_clarifying_question":
-        return args["question"]
-
+        return str(args.get("question", ""))
     if name == "decline":
-        return args["reason"]
-
+        return str(args.get("reason", ""))
     return f"error: unknown tool {name!r}"
+
+
+def clear_result_sets() -> None:
+    """Drop all policy-issued chart handles (between eval runs)."""
+    _RESULT_SETS.clear()

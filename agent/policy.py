@@ -54,6 +54,16 @@ FLOOR_PROTECTED_CLASS = "floor_protected_class"  # enforced by the floors stage
 AGGREGATE_ONLY = "aggregate_only"                # floors stage: access is limited to the
                                                  # sanctioned aggregate path (fair_lending)
 
+# Categories that mean "this access decision is final": the agent loop force-declines
+# instead of letting the model retry. PARSE is deliberately absent — an unparsable or
+# unresolvable statement is an ordinary query error (e.g. a guessed column name), so the
+# model sees the normalized message and may correct itself; the access policy still
+# backstops whatever it submits next.
+ACCESS_REFUSAL_CATEGORIES = frozenset({
+    COLUMN_DENIED, ROW_SCOPE, TABLE_DENIED, STATEMENT_KIND, TIMEOUT,
+    FLOOR_K_ANONYMITY, FLOOR_PROTECTED_CLASS, AGGREGATE_ONLY,
+})
+
 # ---------------------------------------------------------------- permission matrix
 
 ROW_CAP = 500
@@ -412,6 +422,27 @@ def _authorize(
             raise _refuse(COLUMN_DENIED, f"column {table}.{current} is not permitted for role {role!r}")
 
 
+def _gate_generalized_aggregates(resolved: list[tuple[exp.Column, str, str]], role: str) -> None:
+    """Generalized QI columns (T1) are display and grouping columns only.
+
+    A precise statistic derived from a generalized column defeats the generalization:
+    AVG(2026 - birth_year) reconstructs the average age the T2 denial was meant to
+    withhold (L6). Roles that hold T1 as a substitute for precise forms may project,
+    group, and filter T1 columns — but no aggregate function may consume one. Roles
+    with the precise columns authorized aggregate freely (their precision is explicit);
+    fair_lending is governed by the sanctioned aggregate path instead.
+    """
+    if role not in GENERALIZATION_ROLES:
+        return
+    for col, table, column in resolved:
+        if table == "customers" and column in TIER_COLUMNS["T1"] and _inside_aggregate(col):
+            raise _refuse(
+                COLUMN_DENIED,
+                f"customers.{column} is a generalized column and may not be aggregated "
+                f"for role {role!r}",
+            )
+
+
 def _check_anchor(physical_tables: list[exp.Table], role: str) -> None:
     """Scoped roles must anchor business-table reads with a customers reference.
 
@@ -549,6 +580,7 @@ def run_query(sql: str, user: dict) -> ExecutionReport:
         resolved = _resolve_columns(root_scope)
         substituted = _substitute(resolved, role, report)
         _authorize(resolved, role, substituted)
+        _gate_generalized_aggregates(resolved, role)
         _check_anchor(physical_tables, role)
         params = _wrap_row_scopes(physical_tables, role, user, report)
         executed = _regenerate(tree)

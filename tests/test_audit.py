@@ -170,6 +170,24 @@ def test_tool_call_record_refusal_carries_policy_category_and_detail():
     assert record["rewrites_applied"] == []
 
 
+def test_non_run_sql_call_records_its_args_never_row_values():
+    """VAL-UI-017/021: a make_chart entry carries the handle reference (what the tool
+    was invoked with) — metadata only, never the charted rows themselves."""
+    record = audit.tool_call_record(
+        "make_chart",
+        args={"handle": "r-a1b2c3d4e5f60718", "mark": "bar", "x_field": "segment", "y_field": "customers"},
+        latency_ms=4,
+    )
+    assert record["args"] == {
+        "handle": "r-a1b2c3d4e5f60718", "mark": "bar", "x_field": "segment", "y_field": "customers",
+    }
+    assert record["sql_requested"] == ""
+    assert record["sql_executed"] == ""
+    assert record["rows_returned"] == 0
+    decline = audit.tool_call_record("decline", args={"reason": "Access denied: column_denied."})
+    assert decline["args"] == {"reason": "Access denied: column_denied."}
+
+
 def test_refusal_category_recorded_for_every_taxonomy_member():
     """VAL-CORR-018: one sampled denial per reason category, recorded with its category."""
     cases = [

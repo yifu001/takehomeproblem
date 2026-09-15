@@ -39,6 +39,10 @@ architecture §6 base schema, everything else is exactly §6):
                              clarifying question for clarify calls, else null — the
                              policy category on the refused call plus the stated reason
                              on the decline call gives both refusal layers (§4.5)
+      args             obj   the call's arguments for non-run_sql tools (make_chart's
+                             handle reference, describe_table's table name) so the trail
+                             shows what the tool was invoked with; {} for run_sql (its
+                             SQL is sql_requested) and never any row values
     answer_kind      str   "answer" | "clarify" | "decline" | "error"
     redactions_applied arr  output suppressions applied to the turn (floor group/cell
                              suppression, row-cap truncation); [] when none
@@ -180,6 +184,9 @@ def tool_call_record(
         "latency_ms": int(latency_ms),
         "params": {},
         "reason": reason,
+        # The call's own arguments (e.g. make_chart's handle reference): metadata the
+        # trail needs to show what the tool was invoked with — never row values.
+        "args": dict(args) if args else {},
     }
 
 

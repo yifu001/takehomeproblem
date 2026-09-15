@@ -475,3 +475,58 @@ the added cases needs these:
   both sides. Feature spend ≈310K in / ≈5.9K out.
 - Mission total through this feature: ≈2.4M input tokens (≈$3.4 at the pricing step
   above), most of it input-dominant eval and UI turns.
+
+## Appendix: build-AI log
+
+§6 covers the shipped agent's runtime prompt and its observed failures. This appendix
+covers the other AI in the story: the one that built the project. The build ran as an
+orchestrated mission — a coordinator holding the plan, spinning up one worker per
+feature (policy engine, floors, tool contract, eval extensions, audit, interface
+backend, frontend, docs), each handing off notes to the next, with independent
+validators gating every milestone. Direction flowed one way: user directives locked
+into the mission plan, the plan decomposed into features, a behavioral validation
+contract (111 assertions across leak, correctness, UI, and cross-cutting areas)
+written and reviewed before implementation, each feature required to claim the
+contract assertions it completes. Every feature was committed with its tests; the
+final eval gate ran after the last code change of the mission. Fresh-clone bootstrap
+was verified from a `/tmp` clone with no `.env` present: venv, seed, eval smoke, and
+interface health, zero undocumented steps.
+
+Directives that shaped the build, locked by the user up front:
+
+- FastAPI + a vanilla-JS SPA, Vega-Lite vendored locally — no build step, no CDN.
+- Model `gpt-5.6-terra` throughout, build and runtime.
+- Commits directly on `main`, one commit per feature with its tests.
+- The orchestrator writes the walkthrough script; the user records the video.
+
+Where the build model was wrong, and what was overridden:
+
+- **t3 was misdiagnosed as a planted inconsistency.** The mission plan carried
+  forward the take-home materials' claim that the expected [3,2,2,1] is not derivable
+  from the fixture. A worker running the M1 eval gate proved otherwise: the
+  active-scoped per-rule ground truth is R-VELOCITY 3 / R-STRUCTURING 2 /
+  R-SANCTIONS 2 / R-CARD-TESTING 1 — the same multiset, and the harness's `numbers`
+  check is order-insensitive. The correction propagated to every mission doc before
+  NOTES.md was written; §2 states it precisely and the case passes honestly.
+- **L20's prompt fix was reverted.** A prompt rule demanding tool-delivered denials
+  fixed L20 but repeatedly broke unrelated correctness cases (b3 went 0/3). HEAD-vs-
+  edit runs on the same cases attributed the damage, the edit was fully reverted, and
+  the fix moved to the loop: refused calls are final, plus the conservative
+  apostrophe-normalized backstop described in §6 item 4. Pinned by L20 and five loop-
+  contract tests in `tests/test_tools_contract.py`.
+- **The b2/b3 clarify flake was not prompt-patched.** Two prompt fixes were attempted
+  and rejected when full runs showed them perturbing unrelated eval cases; the flake
+  (~1 in 4-5 full runs, rotating across the clarify family) is documented in §1 as
+  the honest error bar instead. No eval case was edited to chase it.
+- **Compliance over-filtering.** Discovered during walkthrough verification (§6 item
+  6): the model declined a legitimate compliance T4/T3 read pre-execution. Fixed by
+  eval case c13 plus one permission sentence in the prompt's compliance paragraph;
+  pinned by VAL-CORR-033.
+
+Environment lessons, one line each: a stale API key in the session env once masked
+the repo `.env` until evals failed on auth; agent-browser silently drops synthetic
+input on HTTP pages here (validators drive the UI via `eval()`); UI validators run
+serially against the one in-process worker on :3123.
+
+For the shipped agent's runtime prompt and its seven observed runtime failures, see
+§6; that log and this one are different models, different failure modes, both kept.

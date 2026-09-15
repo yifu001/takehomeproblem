@@ -10,30 +10,137 @@ formality; it is one of the things we read most carefully.
 
 ## What this is
 
-`agent/` contains a working conversational-BI agent over a small fraud-operations
+`agent/` contains a conversational-BI agent over a small fraud-operations
 warehouse. Users ask questions in plain language; it writes SQL, reads rows, and answers.
-It runs. It is also wrong in ways that matter.
 
-Different users have different roles and are entitled to different data. **The core of
-this exercise is where that entitlement is enforced.** Everything else is secondary, and
-we have said so in the rubric below.
+The version that ships here is the locked-down one. Enforcement is structural and
+lives server-side, in a policy pipeline every statement passes through before its
+results can reach the model's context. The baseline's enforcement — a model-supplied
+`role` parameter plus a string-match on the SELECT list — is gone; what replaced it
+is summarized under [Architecture](#architecture-summary) and in detail in `NOTES.md`.
+Prompt injections are planted in the data (they are part of the fixture); the agent
+ignores them, and the eval proves it.
 
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-python seed.py
-export OPENAI_API_KEY=...          # 
-python eval/run_eval.py --ids c2      # smoke test: one question, ~15s
-python eval/run_eval.py               # full suite, ~36 agent runs
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python seed.py            # builds fraud.db; idempotent, deterministic
+export OPENAI_API_KEY=...           # your key
+.venv/bin/python eval/run_eval.py --ids c2      # smoke test: one question, ~15s
+.venv/bin/python eval/run_eval.py               # full suite, ~52 agent runs
 ```
 
-The key is yours for the exercise and has a fixed budget. Keep it out of anything you send
-back.
+Notes:
 
-The model is a one-line constant in `agent/baseline.py`; `gpt-5.5` is only a default.
-Use whichever model you prefer — nothing here is tuned to a particular one, and if you
-would rather point it at another provider with your own key, that is fine too.
+- Python 3.14 was used; nothing exotic is pinned. All dependencies are in
+  `requirements.txt`.
+- `OPENAI_API_KEY` can also live in a `./.env` file at the repo root instead of the
+  environment. The interface loads it from there automatically when the variable is
+  not already exported; the eval CLI reads the exported variable. Either way, the
+  key never enters git — `.env` is gitignored, and `git ls-files` shows no trace of
+  it. Keep it out of anything you send back.
+- `seed.py` is the schema and the fixture in one file and may be re-run freely;
+  it rebuilds the same database byte-for-byte.
+
+## Running the eval
+
+```bash
+.venv/bin/python eval/run_eval.py                # everything (~52 runs, a few minutes)
+.venv/bin/python eval/run_eval.py --only leaks   # the binary gate; must print CLEAN
+.venv/bin/python eval/run_eval.py --ids c2,L6    # targeted cases while iterating
+.venv/bin/python eval/run_eval.py --verbose      # print transcripts for failures
+```
+
+`--only leaks` is the submission gate: a leak is restricted data entering the model's
+context anywhere in a transcript, and one leak is a failing submission. The suite is
+52 cases: 24 correctness + calibration (c1-c12, t1-t3, b1-b4, u1-u3, d1-d2) and 28
+data-access (L1-L28, including the 11 we added). Each run is a real model call
+(~8s, ~3.2K tokens each); see `NOTES.md` for the cost accounting.
+
+## Running the interface
+
+```bash
+.venv/bin/python -m uvicorn interface.app:app --host 127.0.0.1 --port 3123
+```
+
+Then open http://localhost:3123. A ~3-minute recording script with the exact prompts
+to type and what should appear is in `WALKTHROUGH.md`.
+
+## Testing
+
+```bash
+.venv/bin/python -m pytest                    # unit suite; no API access needed
+.venv/bin/python -m compileall agent interface
+```
+
+The pytest suite (367 tests) covers the policy engine against hostile SQL
+(subqueries, CTEs, UNION, window functions, comments, multi-statements, PRAGMA,
+casts), the disclosure floors, join-cascade scoping, and cache/history identity
+binding. It runs offline.
+
+## Architecture summary
+
+One-line design: **the model never holds power; every tool result is produced by a
+policy pipeline that runs before data can reach the model's context.**
+
+```
+User (identity picked in UI) ──► FastAPI backend (port 3123)
+                                    │ resolves identity server-side via db.get_user()
+                                    ▼
+                              Agent loop (agent/baseline.py)
+                                    │ tools: run_sql, make_chart, list/describe,
+                                    │        ask_clarifying_question, decline — NO role param
+                                    ▼
+                              Policy engine (agent/policy.py)
+   parse (SQLite, single SELECT) → qualify (expand *, resolve aliases/CTEs)
+   → column-tier authorization over the whole statement
+   → generalization substitution (zip_code→zip3, dob→birth_year, income→income_band)
+   → row-scope rewrite (every customers reference wrapped; cascades through joins)
+   → floors (k=2; T5 reporting rule) → execute (read-only conn, authorizer,
+     row cap, timeout) → audit record
+                                    ▼
+                              audit/turns.jsonl  ·  Chat UI (vanilla JS + Vega-Lite)
+```
+
+The load-bearing decisions:
+
+- **Identity is server-side, per turn.** The `role` parameter no longer exists on
+  any tool; role claims in tool arguments are stripped. A conversation is bound to
+  its first identity (mismatch is a 409), history is identity-bound, and the query
+  cache is keyed by (identity, post-policy SQL).
+- **Only rewritten SQL executes.** The model's original string is never run; this
+  neutralizes parser-differential tricks. Forbidden columns are refused anywhere in
+  the statement — SELECT list, WHERE, JOIN-ON, GROUP BY, ORDER BY, window specs,
+  CTE bodies, subqueries — not merely hidden from output.
+- **Row scope cascades through joins.** Transactions, alerts and case_notes have no
+  region column; the rewrite wraps every `customers` reference so the scope reaches
+  them through the join.
+- **Generalization, not denial, for the analyst tier:** a zip ask returns zip3, an
+  age ask returns birth_year, an income ask returns income_band. The floors run at
+  the result layer: k=2 on customer-grain aggregates, and the T5 reporting rule
+  (population ≥ 10, every cell ≥ 3, suppression-derivation check).
+- **Fail closed, and say why.** Every access refusal is a structured decline that
+  states access as the reason and carries a machine-readable category
+  (`column_denied`, `row_scope`, `table_denied`, `statement_kind`, `parse`,
+  `floor_k_anonymity`, `floor_protected_class`). Refusals are visually distinct
+  from empty results everywhere, including on screen.
+- **Every turn writes an audit record** to `audit/turns.jsonl`: identity, resolved
+  scope, requested vs executed SQL, rows, refusals with categories, redactions,
+  tokens, latency. Metadata only, never row values. `NOTES.md` shows how to query it.
+
+Module map: `agent/policy.py` (permission matrix, pipeline, floors, execution), 
+`agent/audit.py` (audit schema + JSONL), `agent/baseline.py` (agent loop), 
+`agent/tools.py` (tool dispatch, error contract, handle-based charts), 
+`agent/db.py` (read-only connection factory), `interface/` (FastAPI + SPA),
+`eval/` (harness + case suites), `tests/` (pytest).
+
+---
+
+The rest of this document is the original assignment: the data, the permission model
+(the specification the implementation follows), the task as given, the interface,
+and the deliverables and scoring rubric.
 
 ## The data
 

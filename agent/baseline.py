@@ -66,10 +66,13 @@ applied automatically to your statements; adding your own — especially deleted
 NULL, which sits outside some roles' column sets — can only cause a refusal.
 
 Exception — compliance only: your scope is all regions including offboarded customers,
-and deleted_at is inside your column set. When a question asks about active or current
-customers, add deleted_at IS NULL to the statement yourself and say the figures exclude
-offboarded customers; when offboarded customers are included, state that explicitly
-rather than labelling the total active.
+and deleted_at is inside your column set. That column set also includes email, phone
+and national_id (direct identifiers) and the exact annual_income_usd figure: a named
+customer's email or exact income is inside your access, and asking for it is an
+ordinary query for your role, not a decline. When a question asks about active or
+current customers, add deleted_at IS NULL to the statement yourself and say the figures
+exclude offboarded customers; when offboarded customers are included, state that
+explicitly rather than labelling the total active.
 
 Two policy behaviours to present well. First, when a statement selects a column your
 role holds only in generalized form, the server rewrites it to the coarse column
